@@ -16,6 +16,8 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 
 from apicall_input import main_api_call 
 from data_extraction_v2 import main_extract_transform
+from training_insights.store import create_session_context
+from training_insights.summaries import build_activity_summaries
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +58,7 @@ def norm_user_data(df: pd.DataFrame) -> pd.DataFrame:
     user_normalized = user_normalized.drop(columns=[ 'Date'], errors='ignore')
     return user_normalized
 
-def runitall(email: str, password: str, zone3: int , zone5: int ) -> BytesIO:
+def runitall(email: str, password: str, zone3: int , zone5: int ) -> Tuple[BytesIO, str]:
     """ 
     run all functions to get the image
             email: str : user email for api call
@@ -82,7 +84,13 @@ def runitall(email: str, password: str, zone3: int , zone5: int ) -> BytesIO:
 
     #pipeline steps
     try:    
-        start_date, end_date, runs, other = main_api_call(email, password)
+        start_date, end_date, runs, other, activity_records = main_api_call(
+            email,
+            password,
+            Z3_min=zone3,
+            Z5_min=zone5,
+            include_activity_records=True,
+        )
     except Exception as e:
         logger.error(f"An error occurred during the API call: make sure email and password are correct, and try again")
         raise
@@ -109,6 +117,22 @@ def runitall(email: str, password: str, zone3: int , zone5: int ) -> BytesIO:
         logger.error(f"An error occurred while making predictions on converted data: {e}")
         raise
     logger.info("Predictions made successfully.")
+
+    try:
+        activity_summaries = build_activity_summaries(activity_records, df, recent_days=90)
+        session_id = create_session_context(
+            start_date=str(start_date),
+            end_date=str(end_date),
+            zone3=zone3,
+            zone5=zone5,
+            activity_records=activity_records,
+            activity_summaries=activity_summaries,
+        )
+        logger.info("Training insights context prepared with %s summaries.", len(activity_summaries))
+    except Exception as e:
+        logger.error(f"An error occurred while creating training insights summaries: {e}")
+        raise
+
     # plot the probabilities over time with a rolling mean
     plt.figure(figsize=(10,5))
     plt.title('Injury Risk score over time')
@@ -130,7 +154,7 @@ def runitall(email: str, password: str, zone3: int , zone5: int ) -> BytesIO:
     buffer_img.seek(0)
     plt.close()
 
-    return buffer_img
+    return buffer_img, session_id
 
 app = FastAPI(
     title = 'Run Injury Prediction API',
@@ -200,7 +224,7 @@ async def predict_and_visualize(email: str = Form(...), password: str = Form(...
     logger.info("Received request for injury risk prediction.")
     try:
         # run the full pipeline to get the image
-        img =  runitall(email, password, zone3, zone5)
+        img, session_id = runitall(email, password, zone3, zone5)
         
            
         # convert to base64 for embedding in <img>
@@ -212,6 +236,7 @@ async def predict_and_visualize(email: str = Form(...), password: str = Form(...
             <body>
                 <h2>Your Injury Risk Prediction</h2>
                 <p>Below is your personalized risk trend graph. Scroll down for notes on interpretation.</p>
+                <p><small>Training insights context prepared for this session.</small></p>
 
                 <img src="data:image/png;base64,{img_base64}" alt="Injury Risk Graph" style="max-width:600px;"/>
 
@@ -240,6 +265,8 @@ async def predict_and_visualize(email: str = Form(...), password: str = Form(...
                 </p>
 
                 <a href="/">← Back to Home</a>
+                <!-- commit2 scaffolding: training insights session id -->
+                <div data-training-session-id="{session_id}" style="display:none;"></div>
             </body>
         </html>
         """

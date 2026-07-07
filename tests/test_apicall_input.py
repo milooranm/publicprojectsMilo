@@ -58,3 +58,28 @@ def test_get_activities_content():
     #    for date_key, data in activity.items():
     #        assert isinstance(date_key, str)
     #        assert 'hours_alternative' in data
+
+
+class _FakeAPI:
+    class ActivityDownloadFormat:
+        CSV = "csv"
+
+    def get_activities_by_date(self, start, end):
+        return [
+            {
+                "startTimeLocal": "2025-12-10 07:30:00",
+                "activityType": {"typeKey": "running"},
+                "activityId": 123,
+                "activityName": "Morning Run",
+            }
+        ]
+
+    def download_activity(self, activity_id, dl_fmt=None):
+        # Missing "Avg HR" header on purpose to cover malformed schema behavior.
+        return b"Distance,Time\n1.0,00:05:00\n2.0,00:10:00\n"
+
+
+def test_get_activities_malformed_running_csv_schema_raises_value_error():
+    api = _FakeAPI()
+    with pytest.raises(ValueError):
+        get_activities(api, date(2025, 12, 1), date(2025, 12, 10), 135, 172)
